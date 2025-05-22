@@ -1,0 +1,122 @@
+use anyhow::{anyhow, Result};
+use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
+use std::io;
+use std::panic;
+
+mod app;
+mod event;
+mod state;
+mod ui;
+mod utils;
+
+use app::App;
+use event::{Event, EventHandler};
+use ui::ui;
+
+fn main() -> Result<()> {
+    // Set up panic hook to restore terminal on crash
+    let original_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        // Try to restore terminal first
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture
+        );
+        
+        // Then call the original hook
+        original_hook(panic_info);
+    }));
+    
+    // Setup terminal
+    let mut terminal = setup_terminal()?;
+    
+    // Create app state
+    let mut app = App::new()?;
+    
+    // Create event handler
+    let mut event_handler = EventHandler::new(250);
+    
+    // Try to select a task if we start on the Kanban tab
+    if app.tab_index == 1 {
+        let _ = app.select_first_available_task();
+    }
+    
+    // Run the application
+    let res = run_app(&mut terminal, &mut app, &mut event_handler);
+    
+    // Restore terminal
+    restore_terminal(&mut terminal)?;
+    
+    // Handle any errors that occurred during app execution
+    if let Err(err) = res {
+        println!("{:?}", err);
+    }
+    
+    Ok(())
+}
+
+fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
+    crossterm::terminal::enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    crossterm::execute!(
+        stdout,
+        crossterm::terminal::EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture
+    )?;
+    let backend = CrosstermBackend::new(stdout);
+    let terminal = Terminal::new(backend)?;
+    Ok(terminal)
+}
+
+fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+    crossterm::terminal::disable_raw_mode()?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::event::DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+    Ok(())
+}
+
+fn run_app(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    event_handler: &mut EventHandler,
+) -> Result<()> {
+    // Check initial terminal size
+    check_terminal_size(terminal)?;
+    
+    loop {
+        // Draw the UI
+        terminal.draw(|f| ui::<CrosstermBackend<io::Stdout>>(f, app))?;
+        
+        // Handle events
+        match event_handler.next()? {
+            Event::Tick => {
+                app.tick();
+            }
+            Event::Input(key) => {
+                if app.handle_key(key)? {
+                    return Ok(());
+                }
+            }
+            Event::Resize => {
+                // Check terminal size after resize
+                check_terminal_size(terminal)?;
+            }
+        }
+    }
+}
+}
+
+fn check_terminal_size(terminal: &Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+    let size = terminal.size()?;
+    if size.width < 80 || size.height < 24 {
+        return Err(anyhow!("Terminal too small, min 80x24, current {}x{}", size.width, size.height));
+    }
+    Ok(())
+}

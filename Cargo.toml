@@ -1,0 +1,39 @@
+[package]
+name = "timber-task"
+version = "0.1.0"
+edition = "2021"
+authors = ["Zachary Blevins"]
+description = "A terminal-based Pomodoro timer with Kanban task management"
+readme = "README.md"
+default-run = "timber-task"
+
+[[bin]]
+name = "timber-task"
+path = "src/main.rs"
+
+[dependencies]
+# TUI framework
+ratatui = "0.25.0"         # Modern TUI framework (successor to tui-rs)
+crossterm = "0.27.0"       # Cross-platform terminal handling
+
+# State management
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Time handling
+chrono = "0.4"             # Date and time library
+notify-rust = "4.9"        # Desktop notifications (for pomodoro completion)
+
+# Data storage
+home = "0.5"               # For finding the user's home directory
+anyhow = "1.0"             # Error handling
+thiserror = "1.0"          # Error definitions
+
+# Async capabilities (for background timers)
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# Utility
+uuid = { version = "1.4", features = ["v4", "serde"] }
+unicode-width = "0.1.10"   # For handling text width calculations
+ctrlc = "3.4.0"            # For handling Ctrl+C signals
