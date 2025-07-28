@@ -8,8 +8,6 @@ updates:
       day: "monday"
       time: "08:00"
     open-pull-requests-limit: 10
-    reviewers:
-      - "zacharyblevins"
     labels:
       - "dependencies"
       - "rust"
@@ -26,8 +24,6 @@ updates:
       day: "monday"
       time: "08:00"
     open-pull-requests-limit: 10
-    reviewers:
-      - "zacharyblevins"
     labels:
       - "dependencies"
       - "github-actions"
