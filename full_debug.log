@@ -1,0 +1,6 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running `target/debug/timber-task`
+Error setting up terminal: Device not configured (os error 6)
+This application requires a fully interactive terminal.
+Please run this program directly in a terminal window, not through an IDE/editor terminal.
+Error: Terminal setup failed. Please run in a fully interactive terminal.

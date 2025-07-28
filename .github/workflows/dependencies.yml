@@ -1,0 +1,55 @@
+name: Dependency Updates
+
+on:
+  schedule:
+    # Run every Monday at 8:00 UTC
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+jobs:
+  update-dependencies:
+    name: Update Dependencies
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Update dependencies
+      run: |
+        cargo update
+        cargo upgrade --incompatible
+      continue-on-error: true
+    
+    - name: Check if updates are available
+      id: check_updates
+      run: |
+        if git diff --quiet Cargo.lock; then
+          echo "No updates available"
+          echo "updates_available=false" >> $GITHUB_OUTPUT
+        else
+          echo "Updates available"
+          echo "updates_available=true" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Run tests with updated dependencies
+      if: steps.check_updates.outputs.updates_available == 'true'
+      run: |
+        cargo test
+        cargo clippy -- -D warnings
+    
+    - name: Create Pull Request
+      if: steps.check_updates.outputs.updates_available == 'true'
+      uses: peter-evans/create-pull-request@v6
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: 'chore: update dependencies'
+        title: 'Automated dependency updates'
+        body: |
+          This PR contains automated dependency updates.
+          
+          Please review the changes and ensure all tests pass before merging.
+        branch: deps/automated-update
+        delete-branch: true

@@ -25,6 +25,8 @@ pub fn format_time_spent(seconds: u64) -> String {
 
 /// Format a Unix timestamp as a human-readable date/time
 pub fn format_timestamp(timestamp: u64) -> String {
-    let dt = Local.timestamp_opt(timestamp as i64, 0).unwrap();
-    dt.format("%Y-%m-%d %H:%M").to_string()
+    match Local.timestamp_opt(timestamp as i64, 0) {
+        chrono::LocalResult::Single(dt) => dt.format("%Y-%m-%d %H:%M").to_string(),
+        _ => "Invalid timestamp".to_string(),
+    }
 }

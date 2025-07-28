@@ -1,18 +1,21 @@
 use ratatui::Frame;
-use ratatui::backend::Backend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use crate::app::App;
+use crate::utils::mutex::lock_mutex;
 use crate::state::kanban_state::TaskStatus;
 use crate::utils::text::truncate_text;
 
 /// Render the kanban board tab
-pub fn render_kanban<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
+pub fn render_kanban(f: &mut Frame, app: &App, area: Rect) {
     // Lock kanban state
-    let kanban_state = app.kanban_state.lock().unwrap();
+    let kanban_state = match lock_mutex(&app.kanban_state) {
+        Ok(state) => state,
+        Err(_) => return, // Skip rendering if mutex is poisoned
+    };
     
     // Create the layout with three columns for the kanban board
     let chunks = Layout::default()
@@ -26,15 +29,18 @@ pub fn render_kanban<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
     
     // Get current task info from timer state
-    let timer_state = app.timer_state.lock().unwrap();
+    let timer_state = match lock_mutex(&app.timer_state) {
+        Ok(state) => state,
+        Err(_) => return, // Skip rendering if mutex is poisoned
+    };
     let current_task_id = timer_state.current_task_id.clone();
     drop(timer_state); // Release lock
     
     // Nothing to do here
     
     // Render current task info
-    if let Some(task_id) = current_task_id {
-        if let Some(task) = kanban_state.get_task(&task_id) {
+    if let Some(ref task_id) = current_task_id {
+        if let Some(task) = kanban_state.get_task(task_id) {
             let task_info = Paragraph::new(format!("Currently tracking: {} (Time: {})", 
                 task.title, 
                 format_time_spent(task.time_spent)))
@@ -43,7 +49,7 @@ pub fn render_kanban<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
             f.render_widget(task_info, chunks[0]);
         }
     } else {
-        let no_task_info = Paragraph::new("No task selected for tracking - select a task in the \"IN PROGRESS\" column with [Space]")
+        let no_task_info = Paragraph::new("No task selected for tracking - press [Space] on any task to start tracking")
             .style(Style::default().fg(Color::Gray))
             .block(Block::default().borders(Borders::ALL).title("Timer Status"));
         f.render_widget(no_task_info, chunks[0]);
@@ -79,13 +85,13 @@ pub fn render_kanban<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
             .collect();
         
         // Render todo column
-        render_task_column::<B>(f, board_chunks[0], "TODO", &todo_tasks, 0, app.selected_task);
+        render_task_column(f, board_chunks[0], "TODO", &todo_tasks, 0, app.selected_task, current_task_id.as_ref());
         
         // Render in progress column
-        render_task_column::<B>(f, board_chunks[1], "IN PROGRESS", &in_progress_tasks, 1, app.selected_task);
+        render_task_column(f, board_chunks[1], "IN PROGRESS", &in_progress_tasks, 1, app.selected_task, current_task_id.as_ref());
         
         // Render done column
-        render_task_column::<B>(f, board_chunks[2], "DONE", &done_tasks, 2, app.selected_task);
+        render_task_column(f, board_chunks[2], "DONE", &done_tasks, 2, app.selected_task, current_task_id.as_ref());
     } else {
         // No project selected, show a message
         let no_project_msg = Paragraph::new("No projects found. Create a project with Ctrl+N")
@@ -96,7 +102,7 @@ pub fn render_kanban<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
     
     // Render keyboard shortcuts at the bottom with highlighted keys
     let shortcuts = Paragraph::new(
-        "[n] New Task  |  [t] To-Do  |  [i] In Progress  |  [d] Done  |  [x] Delete  |  [Space] Track task  |  [↑↓←→] Navigate"
+        "[n] New  |  [v] View  |  [i] In Progress  |  [c] Complete  |  [d] Delete  |  [Space] Track  |  [↑↓←→] Navigate"
     )
     .style(Style::default().fg(Color::White))
     .block(Block::default().borders(Borders::ALL).title("Keyboard Shortcuts"))
@@ -106,13 +112,14 @@ pub fn render_kanban<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Render a single kanban column with tasks
-fn render_task_column<B: Backend>(
+fn render_task_column(
     f: &mut Frame, 
     area: Rect, 
     title: &str, 
     tasks: &[&crate::state::kanban_state::Task],
     column_idx: usize,
     selected_task: Option<(usize, usize)>,
+    current_task_id: Option<&String>,
 ) {
     // Create a title with task count and selection status
     let column_title = if let Some((sel_col, _)) = selected_task {
@@ -143,14 +150,22 @@ fn render_task_column<B: Backend>(
     // Create a list of task items
     let items: Vec<ListItem> = tasks.iter().enumerate().map(|(i, task)| {
         // Truncate text to fit in column width (with padding)
-        let width = inner_area.width.saturating_sub(4) as usize;
+        let width = inner_area.width.saturating_sub(6) as usize; // Extra space for timer icon
         let title = truncate_text(&task.title, width);
         
+        // Check if this task is being tracked
+        let is_tracked = current_task_id.map_or(false, |id| id == &task.id);
+        
         // Create task item with title and time spent
-        let task_text = format!("{} ({})", title, format_time_spent(task.time_spent));
+        let mut task_text = format!("{} ({})", title, format_time_spent(task.time_spent));
+        
+        // Add timer icon if this task is being tracked
+        if is_tracked {
+            task_text = format!("⏱️ {}", task_text);
+        }
         
         // Check if this task is selected
-        let is_selected = selected_task.map_or(false, |(c, t)| c == column_idx && t == i);
+        let is_selected = selected_task.is_some_and(|(c, t)| c == column_idx && t == i);
         
         // Make selected item VERY visible
         if is_selected {
@@ -159,11 +174,25 @@ fn render_task_column<B: Backend>(
                 .fg(Color::Black) // Text color
                 .add_modifier(Modifier::BOLD);
                 
-            let text = format!("→ {}", task_text); // Add an arrow to the selected task
+            let text = if is_tracked {
+                format!("→{}", task_text) // Arrow right after timer icon
+            } else {
+                format!("→ {}", task_text) // Add an arrow to the selected task
+            };
             ListItem::new(Span::styled(text, style))
         } else {
-            let style = Style::default().fg(Color::White);
-            let text = format!("  {}", task_text); // Add spacing for alignment
+            let style = if is_tracked {
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let text = if !is_tracked {
+                format!("  {}", task_text) // Add spacing for alignment
+            } else {
+                task_text // Timer icon provides the spacing
+            };
             ListItem::new(Span::styled(text, style))
         }
     }).collect();

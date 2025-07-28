@@ -1,6 +1,8 @@
 use anyhow::Result;
 use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, KeyCode, KeyModifiers};
 use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,12 +18,14 @@ pub enum Event {
 
 /// Event handler
 pub struct EventHandler {
-    /// Event sender channel (unused in struct but needed for thread)
-    _sender: mpsc::Sender<Event>,
+    /// Event sender channel
+    sender: mpsc::Sender<Event>,
     /// Event receiver channel
     receiver: mpsc::Receiver<Event>,
     /// Event handler thread
-    _handle: thread::JoinHandle<()>,
+    handle: Option<thread::JoinHandle<()>>,
+    /// Shutdown signal
+    shutdown: Arc<AtomicBool>,
 }
 
 impl EventHandler {
@@ -29,17 +33,21 @@ impl EventHandler {
     pub fn new(tick_rate: u64) -> Self {
         let tick_rate = Duration::from_millis(tick_rate);
         let (sender, receiver) = mpsc::channel();
-        let _handle = {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = shutdown.clone();
+        
+        let handle = {
             let sender = sender.clone();
             thread::spawn(move || {
                 let mut last_tick = Instant::now();
-                loop {
+                while !shutdown_clone.load(Ordering::Relaxed) {
                     let timeout = tick_rate
                         .checked_sub(last_tick.elapsed())
                         .unwrap_or_else(|| Duration::from_secs(0));
 
-                    if event::poll(timeout).expect("Failed to poll for events") {
-                        match event::read().expect("Failed to read event") {
+                    match event::poll(timeout) {
+                        Ok(true) => match event::read() {
+                            Ok(event) => match event {
                             CrosstermEvent::Key(key) => {
                                 // Handle Ctrl+C through the main event loop
                                 if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -67,6 +75,16 @@ impl EventHandler {
                                 }
                             }
                             _ => {}
+                            },
+                            Err(_) => {
+                                // Failed to read event, but we can continue
+                            }
+                        },
+                        Ok(false) => {
+                            // No event available
+                        }
+                        Err(_) => {
+                            // Failed to poll, but we can continue
                         }
                     }
 
@@ -81,14 +99,39 @@ impl EventHandler {
         };
 
         Self {
-            _sender: sender,
+            sender,
             receiver,
-            _handle,
+            handle: Some(handle),
+            shutdown,
         }
     }
 
     /// Get the next event from the handler
     pub fn next(&self) -> Result<Event> {
         Ok(self.receiver.recv()?)
+    }
+    
+    /// Signal the event handler to shutdown
+    pub fn shutdown(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        // Send a dummy event to wake up the thread if it's blocked on poll
+        let _ = self.sender.send(Event::Tick);
+    }
+}
+
+impl Drop for EventHandler {
+    fn drop(&mut self) {
+        // Signal shutdown
+        self.shutdown.store(true, Ordering::Relaxed);
+        
+        // Send a dummy event to wake up the thread if it's blocked
+        let _ = self.sender.send(Event::Tick);
+        
+        // Wait for the thread to finish
+        if let Some(handle) = self.handle.take() {
+            // Give the thread a reasonable amount of time to finish
+            // We use a timeout to avoid hanging forever
+            let _ = handle.join();
+        }
     }
 }

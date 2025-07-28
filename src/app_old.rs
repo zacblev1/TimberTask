@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::sync::{Arc, Mutex};
 
+use crate::utils::mutex::lock_mutex;
+
 use crate::state::{
     kanban_state::{KanbanState, TaskStatus},
     timer_state::TimerState,
@@ -355,7 +357,7 @@ impl App {
             return Ok(());
         }
         
-        let mut notes_state = self.notes_state.lock().unwrap();
+        let mut notes_state = lock_mutex(&self.notes_state)?;
         
         // Check if we're editing an existing note or creating a new one
         if self.is_editing_existing_note {
@@ -394,7 +396,7 @@ impl App {
     
     /// Edit the currently selected note
     fn edit_selected_note(&mut self) -> Result<()> {
-        let notes_state = self.notes_state.lock().unwrap();
+        let notes_state = lock_mutex(&self.notes_state)?;
         
         if let Some(selected_note) = notes_state.get_selected_note() {
             // Load note data into form
@@ -417,7 +419,7 @@ impl App {
     
     /// Toggle expanded state of the selected note
     fn toggle_note_expanded(&mut self) -> Result<()> {
-        let mut notes_state = self.notes_state.lock().unwrap();
+        let mut notes_state = lock_mutex(&self.notes_state)?;
         
         if let Some(selected_note) = notes_state.get_selected_note() {
             // Only toggle if the note has children
@@ -432,7 +434,7 @@ impl App {
     
     /// Delete the currently selected note
     fn delete_selected_note(&mut self) -> Result<()> {
-        let mut notes_state = self.notes_state.lock().unwrap();
+        let mut notes_state = lock_mutex(&self.notes_state)?;
         
         if let Some(selected_note) = notes_state.get_selected_note() {
             let note_id = selected_note.id.clone();
@@ -444,7 +446,7 @@ impl App {
     
     /// Create a child note under the currently selected note
     fn create_child_note(&mut self) -> Result<()> {
-        let notes_state = self.notes_state.lock().unwrap();
+        let notes_state = lock_mutex(&self.notes_state)?;
         
         // Get parent ID if a note is selected
         let parent_id = if let Some(selected_note) = notes_state.get_selected_note() {
@@ -499,7 +501,7 @@ impl App {
             return Ok(());
         }
         
-        let mut notes_state = self.notes_state.lock().unwrap();
+        let mut notes_state = lock_mutex(&self.notes_state)?;
         notes_state.create_tag(&self.tag_form_name, None)?;
         
         // Reset tag name field
@@ -512,7 +514,7 @@ impl App {
     /// Delete the selected tag
     fn delete_selected_tag(&mut self) -> Result<()> {
         if let Some(idx) = self.selected_tag_idx {
-            let mut notes_state = self.notes_state.lock().unwrap();
+            let mut notes_state = lock_mutex(&self.notes_state)?;
             
             // Get all tags and find the one at the selected index
             let tags: Vec<_> = notes_state.tags.values().collect();
@@ -535,7 +537,7 @@ impl App {
     
     /// Navigate up in the notes list
     fn navigate_notes_up(&mut self) -> Result<()> {
-        let mut notes_state = self.notes_state.lock().unwrap();
+        let mut notes_state = lock_mutex(&self.notes_state)?;
         
         // Get all visible notes in the current view
         let mut visible_notes = Vec::new();
@@ -591,7 +593,7 @@ impl App {
     
     /// Navigate down in the notes list
     fn navigate_notes_down(&mut self) -> Result<()> {
-        let mut notes_state = self.notes_state.lock().unwrap();
+        let mut notes_state = lock_mutex(&self.notes_state)?;
         
         // Get all visible notes in the current view
         let mut visible_notes = Vec::new();
@@ -647,7 +649,7 @@ impl App {
     
     /// Navigate left in the notes list (collapse)
     fn navigate_notes_left(&mut self) -> Result<()> {
-        let mut notes_state = self.notes_state.lock().unwrap();
+        let mut notes_state = lock_mutex(&self.notes_state)?;
         
         // Clone necessary data to avoid borrow conflicts
         let action = if let Some(selected_note) = notes_state.get_selected_note() {
@@ -686,7 +688,7 @@ impl App {
     
     /// Navigate right in the notes list (expand)
     fn navigate_notes_right(&mut self) -> Result<()> {
-        let mut notes_state = self.notes_state.lock().unwrap();
+        let mut notes_state = lock_mutex(&self.notes_state)?;
         
         // Clone necessary data to avoid borrow conflicts
         let action = if let Some(selected_note) = notes_state.get_selected_note() {
@@ -729,7 +731,10 @@ impl App {
     
     /// Navigate up in the tag list
     fn navigate_tag_list_up(&mut self) {
-        let notes_state = self.notes_state.lock().unwrap();
+        let notes_state = match lock_mutex(&self.notes_state) {
+            Ok(state) => state,
+            Err(_) => return, // Skip if mutex is poisoned
+        };
         let tag_count = notes_state.tags.len();
         
         if tag_count == 0 {
@@ -748,7 +753,10 @@ impl App {
     
     /// Navigate down in the tag list
     fn navigate_tag_list_down(&mut self) {
-        let notes_state = self.notes_state.lock().unwrap();
+        let notes_state = match lock_mutex(&self.notes_state) {
+            Ok(state) => state,
+            Err(_) => return, // Skip if mutex is poisoned
+        };
         let tag_count = notes_state.tags.len();
         
         if tag_count == 0 {
@@ -769,7 +777,7 @@ impl App {
     pub fn new() -> Result<Self> {
         // Set up logging
         let log_file = home::home_dir()
-            .expect("Failed to get home directory")
+            .ok_or_else(|| anyhow!("Failed to get home directory"))?
             .join(".timber-task")
             .join("app.log");
             
@@ -795,7 +803,7 @@ impl App {
         
         // Load saved data
         {
-            let mut kanban = kanban_state.lock().unwrap();
+            let mut kanban = lock_mutex(&kanban_state)?;
             if let Err(e) = kanban.load_from_disk() {
                 let err_msg = format!("Warning: Failed to load kanban data: {}\n", e);
                 fs::write(&log_file, &err_msg).unwrap_or_else(|_| {
@@ -808,7 +816,7 @@ impl App {
         
         // Load notes data
         {
-            let mut notes = notes_state.lock().unwrap();
+            let mut notes = lock_mutex(&notes_state)?;
             if let Err(e) = notes.load_from_disk() {
                 let err_msg = format!("Warning: Failed to load notes data: {}\n", e);
                 fs::write(&log_file, &err_msg).unwrap_or_else(|_| {
@@ -901,7 +909,7 @@ impl App {
                     2 => {
                         // If switching to notes tab, ensure we have a selected note
                         {
-                            let mut notes_state = self.notes_state.lock().unwrap();
+                            let mut notes_state = lock_mutex(&self.notes_state)?;
                         
                             // Make sure notes are loaded from disk
                             if notes_state.notes.is_empty() {
@@ -1069,7 +1077,7 @@ impl App {
         
         // Create task
         {
-            let mut kanban = self.kanban_state.lock().unwrap();
+            let mut kanban = lock_mutex(&self.kanban_state)?;
             
             let title = self.task_form_title.clone();
             let description = self.task_form_description.clone();
@@ -1077,13 +1085,17 @@ impl App {
             // Create task in the selected project or default project
             if kanban.get_selected_project().is_some() {
                 // Using a temporary string for project_id to avoid borrow issues
-                let project_id = kanban.get_selected_project().unwrap().id.clone();
+                let project_id = kanban.get_selected_project()
+                    .ok_or_else(|| anyhow!("No project selected"))?
+                    .id.clone();
                 kanban.create_task_in_project(&project_id, &title, &description)?;
             } else {
                 // No project selected, create a default project first
                 kanban.create_default_project()?;
                 // Then get the project ID and create task
-                let project_id = kanban.get_selected_project().unwrap().id.clone();
+                let project_id = kanban.get_selected_project()
+                    .ok_or_else(|| anyhow!("No project selected"))?
+                    .id.clone();
                 kanban.create_task_in_project(&project_id, &title, &description)?;
             }
             
@@ -1106,7 +1118,7 @@ impl App {
         match key.code {
             KeyCode::Char('s') => {
                 // Start/skip timer
-                let mut timer = self.timer_state.lock().unwrap();
+                let mut timer = lock_mutex(&self.timer_state)?;
                 if timer.is_running {
                     // If timer is running, skip to next period
                     timer.complete_period();
@@ -1117,7 +1129,7 @@ impl App {
             }
             KeyCode::Char('p') => {
                 // Pause timer and save current time
-                let mut timer = self.timer_state.lock().unwrap();
+                let mut timer = lock_mutex(&self.timer_state)?;
                 if timer.is_running {
                     // Calculate actual elapsed time since start
                     let elapsed_seconds = if timer.is_work_period {
@@ -1142,7 +1154,7 @@ impl App {
                             drop(timer); // Release timer lock before acquiring kanban lock
                             
                             // Add the elapsed time to the task
-                            let mut kanban = self.kanban_state.lock().unwrap();
+                            let mut kanban = lock_mutex(&self.kanban_state)?;
                             let _ = kanban.add_time_to_task(&task_id, elapsed_seconds);
                             let _ = kanban.save_to_disk();
                         }
@@ -1151,7 +1163,7 @@ impl App {
             }
             KeyCode::Char('r') => {
                 // Reset timer but first save any elapsed time
-                let mut timer = self.timer_state.lock().unwrap();
+                let mut timer = lock_mutex(&self.timer_state)?;
                 
                 // If timer is running and it's a work period, calculate elapsed time
                 if timer.is_running && timer.is_work_period {
@@ -1166,11 +1178,14 @@ impl App {
                     
                     // If we have elapsed time and a task, save the time
                     if elapsed_seconds > 0 && task_id.is_some() {
-                        let task_id = task_id.unwrap();
+                        let task_id = match task_id {
+                            Some(id) => id,
+                            None => return Ok(()),
+                        };
                         drop(timer); // Release timer lock before acquiring kanban lock
                         
                         // Add the elapsed time to the task
-                        let mut kanban = self.kanban_state.lock().unwrap();
+                        let mut kanban = lock_mutex(&self.kanban_state)?;
                         let _ = kanban.add_time_to_task(&task_id, elapsed_seconds);
                         let _ = kanban.save_to_disk();
                         
@@ -1184,7 +1199,7 @@ impl App {
             }
             KeyCode::Char('t') => {
                 // Toggle between work and break but first save any elapsed time
-                let mut timer = self.timer_state.lock().unwrap();
+                let mut timer = lock_mutex(&self.timer_state)?;
                 
                 // If timer is running and it's a work period, calculate elapsed time
                 if timer.is_running && timer.is_work_period {
@@ -1199,11 +1214,14 @@ impl App {
                     
                     // If we have elapsed time and a task, save the time
                     if elapsed_seconds > 0 && task_id.is_some() {
-                        let task_id = task_id.unwrap();
+                        let task_id = match task_id {
+                            Some(id) => id,
+                            None => return Ok(()),
+                        };
                         drop(timer); // Release timer lock before acquiring kanban lock
                         
                         // Add the elapsed time to the task
-                        let mut kanban = self.kanban_state.lock().unwrap();
+                        let mut kanban = lock_mutex(&self.kanban_state)?;
                         let _ = kanban.add_time_to_task(&task_id, elapsed_seconds);
                         let _ = kanban.save_to_disk();
                         
@@ -1252,7 +1270,7 @@ impl App {
             KeyCode::Char('t') => {
                 // Add time to selected task
                 if let Some((col_idx, task_idx)) = self.selected_task {
-                    let mut kanban = self.kanban_state.lock().unwrap();
+                    let mut kanban = lock_mutex(&self.kanban_state)?;
                     if let Some(project) = kanban.get_selected_project() {
                         let tasks = kanban.get_project_tasks(&project.id)?;
                         let column_tasks = self.get_tasks_in_column(col_idx, &tasks);
@@ -1282,7 +1300,7 @@ impl App {
             KeyCode::Char(' ') => {
                 if let Some((col_idx, task_idx)) = self.selected_task {
                     // Select task for time tracking
-                    let mut kanban = self.kanban_state.lock().unwrap();
+                    let mut kanban = lock_mutex(&self.kanban_state)?;
                     if let Some(project) = kanban.get_selected_project() {
                         let tasks = kanban.get_project_tasks(&project.id)?;
                         
@@ -1311,7 +1329,7 @@ impl App {
                             drop(kanban); // Release lock
                             
                             // Set current task in timer state
-                            let mut timer = self.timer_state.lock().unwrap();
+                            let mut timer = lock_mutex(&self.timer_state)?;
                             timer.set_current_task(Some(task_id));
                             
                             // If timer is not already running and it's a work period, start it
@@ -1325,7 +1343,7 @@ impl App {
             KeyCode::Char('x') => {
                 // Delete selected task
                 if let Some((col_idx, task_idx)) = self.selected_task {
-                    let mut kanban = self.kanban_state.lock().unwrap();
+                    let mut kanban = lock_mutex(&self.kanban_state)?;
                     if let Some(project) = kanban.get_selected_project() {
                         // Clone the project ID to avoid borrow issues
                         let project_id = project.id.clone();
@@ -1390,7 +1408,7 @@ impl App {
             }
         } else {
             // If no task is selected, select the first task in the first column
-            let kanban = self.kanban_state.lock().unwrap();
+            let kanban = lock_mutex(&self.kanban_state)?;
             if let Some(project) = kanban.get_selected_project() {
                 let tasks = kanban.get_project_tasks(&project.id)?;
                 let todo_tasks = tasks.iter()
@@ -1409,7 +1427,7 @@ impl App {
     /// Move task selection down
     fn move_task_selection_down(&mut self) -> Result<()> {
         if let Some((col_idx, task_idx)) = self.selected_task {
-            let kanban = self.kanban_state.lock().unwrap();
+            let kanban = lock_mutex(&self.kanban_state)?;
             if let Some(project) = kanban.get_selected_project() {
                 let tasks = kanban.get_project_tasks(&project.id)?;
                 
@@ -1423,7 +1441,7 @@ impl App {
             }
         } else {
             // If no task is selected, select the first task in the first column
-            let kanban = self.kanban_state.lock().unwrap();
+            let kanban = lock_mutex(&self.kanban_state)?;
             if let Some(project) = kanban.get_selected_project() {
                 let tasks = kanban.get_project_tasks(&project.id)?;
                 let todo_tasks = tasks.iter()
@@ -1444,7 +1462,7 @@ impl App {
         if let Some((col_idx, _)) = self.selected_task {
             // If already at the leftmost column, do nothing
             if col_idx > 0 {
-                let kanban = self.kanban_state.lock().unwrap();
+                let kanban = lock_mutex(&self.kanban_state)?;
                 if let Some(project) = kanban.get_selected_project() {
                     let tasks = kanban.get_project_tasks(&project.id)?;
                     
@@ -1460,7 +1478,7 @@ impl App {
             }
         } else {
             // If no task is selected, select the first task in the first column
-            let kanban = self.kanban_state.lock().unwrap();
+            let kanban = lock_mutex(&self.kanban_state)?;
             if let Some(project) = kanban.get_selected_project() {
                 let tasks = kanban.get_project_tasks(&project.id)?;
                 let todo_tasks = tasks.iter()
@@ -1481,7 +1499,7 @@ impl App {
         if let Some((col_idx, _)) = self.selected_task {
             // If already at the rightmost column, do nothing
             if col_idx < 2 {
-                let kanban = self.kanban_state.lock().unwrap();
+                let kanban = lock_mutex(&self.kanban_state)?;
                 if let Some(project) = kanban.get_selected_project() {
                     let tasks = kanban.get_project_tasks(&project.id)?;
                     
@@ -1497,7 +1515,7 @@ impl App {
             }
         } else {
             // If no task is selected, select the first task in the first column
-            let kanban = self.kanban_state.lock().unwrap();
+            let kanban = lock_mutex(&self.kanban_state)?;
             if let Some(project) = kanban.get_selected_project() {
                 let tasks = kanban.get_project_tasks(&project.id)?;
                 let todo_tasks = tasks.iter()
@@ -1516,7 +1534,7 @@ impl App {
     /// Move the selected task to a specific column
     pub fn move_task_to_column(&mut self, target_status: TaskStatus) -> Result<()> {
         if let Some((col_idx, task_idx)) = self.selected_task {
-            let kanban = self.kanban_state.lock().unwrap();
+            let kanban = lock_mutex(&self.kanban_state)?;
             if let Some(project) = kanban.get_selected_project() {
                 let tasks = kanban.get_project_tasks(&project.id)?;
                 let column_tasks = self.get_tasks_in_column(col_idx, &tasks);
@@ -1530,7 +1548,7 @@ impl App {
                     self.kanban_state.lock().unwrap().update_task_status(&task_id, target_status)?;
                     
                     // Verify the task was moved correctly
-                    let kanban = self.kanban_state.lock().unwrap();
+                    let kanban = lock_mutex(&self.kanban_state)?;
                     let updated_task = kanban.get_task(&task_id)
                         .ok_or_else(|| anyhow!("Task not found after update"))?;
                     
@@ -1555,7 +1573,7 @@ impl App {
     
     /// Helper method to select the first available task
     pub fn select_first_available_task(&mut self) -> Result<()> {
-        let kanban = self.kanban_state.lock().unwrap();
+        let kanban = lock_mutex(&self.kanban_state)?;
         if let Some(project) = kanban.get_selected_project() {
             let tasks = kanban.get_project_tasks(&project.id)?;
             
@@ -1593,7 +1611,10 @@ impl App {
     
     /// Update on tick
     pub fn tick(&mut self) {
-        let mut timer = self.timer_state.lock().unwrap();
+        let mut timer = match lock_mutex(&self.timer_state) {
+            Ok(timer) => timer,
+            Err(_) => return, // Skip tick if mutex is poisoned
+        };
         
         // Check if timer running and needs updating
         if timer.is_running {
@@ -1624,7 +1645,10 @@ impl App {
                         drop(timer); // Release timer lock before acquiring kanban lock
                         
                         // Add the actual elapsed time to the task
-                        let mut kanban = self.kanban_state.lock().unwrap();
+                        let mut kanban = match lock_mutex(&self.kanban_state) {
+                            Ok(kanban) => kanban,
+                            Err(_) => return, // Skip if mutex is poisoned
+                        };
                         let _ = kanban.add_time_to_task(&task_id, elapsed_seconds);
                         let _ = kanban.save_to_disk();
                     }

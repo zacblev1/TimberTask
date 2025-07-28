@@ -1,0 +1,4 @@
+// Re-export the new modular app components
+pub use app::*;
+
+mod app;

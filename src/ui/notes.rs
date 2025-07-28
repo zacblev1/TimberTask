@@ -1,5 +1,4 @@
 use ratatui::Frame;
-use ratatui::backend::Backend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Alignment};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
@@ -11,7 +10,7 @@ use crate::utils::text::truncate_text;
 use crate::utils::time::format_timestamp;
 
 /// Render the notes tab
-pub fn render_notes<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
+pub fn render_notes(f: &mut Frame, app: &App, area: Rect) {
     // Create the layout with sections for notes
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -24,7 +23,7 @@ pub fn render_notes<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
     
     // Render top bar with search and tag filter
-    render_top_bar::<B>(f, app, chunks[0]);
+    render_top_bar(f, app, chunks[0]);
     
     // Split main area into notes tree and editor
     let main_chunks = Layout::default()
@@ -36,27 +35,27 @@ pub fn render_notes<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
         .split(chunks[1]);
     
     // Render notes tree
-    render_notes_tree::<B>(f, app, main_chunks[0]);
+    render_notes_tree(f, app, main_chunks[0]);
     
     // Render note editor or note details
-    render_note_editor::<B>(f, app, main_chunks[1]);
+    render_note_editor(f, app, main_chunks[1]);
     
     // Render keyboard shortcuts
-    render_shortcuts::<B>(f, chunks[2]);
+    render_shortcuts(f, chunks[2]);
     
     // If we're showing the tag form, render it on top
     if app.show_tag_form {
-        render_tag_form::<B>(f, app, area);
+        render_tag_form(f, app, area);
     }
     
     // If we're in note edit mode, render the editor on top
     if app.editing_note {
-        render_note_edit_form::<B>(f, app, area);
+        render_note_edit_form(f, app, area);
     }
 }
 
 /// Render the top bar with search and tags
-fn render_top_bar<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
+fn render_top_bar(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title("Search & Tags")
         .borders(Borders::ALL);
@@ -126,7 +125,7 @@ fn render_top_bar<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Render the notes tree
-fn render_notes_tree<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
+fn render_notes_tree(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title("Notes")
         .borders(Borders::ALL);
@@ -137,17 +136,18 @@ fn render_notes_tree<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
     
     // Try to lock the notes state, but handle the case where we can't get it
     let notes_state_lock = app.notes_state.try_lock();
-    if notes_state_lock.is_err() {
-        // If we can't get the lock, show a message and return
-        let error_msg = Paragraph::new("Loading notes...")
-            .style(Style::default().fg(Color::Yellow))
-            .alignment(Alignment::Center);
-        
-        f.render_widget(error_msg, inner_area);
-        return;
-    }
-    
-    let notes_state = notes_state_lock.unwrap();
+    let notes_state = match notes_state_lock {
+        Ok(notes) => notes,
+        Err(_) => {
+            // If we can't get the lock, show a message and return
+            let error_msg = Paragraph::new("Loading notes...")
+                .style(Style::default().fg(Color::Yellow))
+                .alignment(Alignment::Center);
+            
+            f.render_widget(error_msg, inner_area);
+            return;
+        }
+    };
     
     // If there are no notes, show a message
     if notes_state.notes.is_empty() {
@@ -240,7 +240,7 @@ fn add_child_notes<'a>(notes_state: &'a crate::state::notes_state::NotesState, d
 }
 
 /// Render the note editor or detail view
-fn render_note_editor<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
+fn render_note_editor(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title("Note Details")
         .borders(Borders::ALL);
@@ -251,17 +251,18 @@ fn render_note_editor<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
     
     // Try to lock the notes state
     let notes_state_lock = app.notes_state.try_lock();
-    if notes_state_lock.is_err() {
-        // If we can't get the lock, show a message and return
-        let error_msg = Paragraph::new("Loading note details...")
-            .style(Style::default().fg(Color::Yellow))
-            .alignment(Alignment::Center);
-        
-        f.render_widget(error_msg, inner_area);
-        return;
-    }
-    
-    let notes_state = notes_state_lock.unwrap();
+    let notes_state = match notes_state_lock {
+        Ok(notes) => notes,
+        Err(_) => {
+            // If we can't get the lock, show a message and return
+            let error_msg = Paragraph::new("Loading note details...")
+                .style(Style::default().fg(Color::Yellow))
+                .alignment(Alignment::Center);
+            
+            f.render_widget(error_msg, inner_area);
+            return;
+        }
+    };
     
     // If no note is selected, show a message
     if notes_state.selected_note_id.is_none() {
@@ -335,7 +336,7 @@ fn render_note_editor<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Render keyboard shortcuts
-fn render_shortcuts<B: Backend>(f: &mut Frame, area: Rect) {
+fn render_shortcuts(f: &mut Frame, area: Rect) {
     let shortcuts = Paragraph::new(
         "[n] New Note  |  [c] Child Note  |  [Enter] Edit  |  [e] Toggle Expand  |  [d] Delete  |  [t] Manage Tags  |  [/] Search  |  [↑↓←→] Navigate"
     )
@@ -347,7 +348,7 @@ fn render_shortcuts<B: Backend>(f: &mut Frame, area: Rect) {
 }
 
 /// Render the tag management form
-fn render_tag_form<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
+fn render_tag_form(f: &mut Frame, app: &App, area: Rect) {
     // Create a centered box for the form
     let form_area = centered_rect(60, 70, area);
     
@@ -398,15 +399,16 @@ fn render_tag_form<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
     
     // Try to get the notes state
     let notes_state_lock = app.notes_state.try_lock();
-    if notes_state_lock.is_err() {
-        // If we can't get the lock, show a loading message
-        let loading_msg = Paragraph::new("Loading tags...")
-            .style(Style::default().fg(Color::Yellow))
-            .alignment(Alignment::Center);
-        
-        f.render_widget(loading_msg, chunks[3]);
-    } else {
-        let notes_state = notes_state_lock.unwrap();
+    match notes_state_lock {
+        Err(_) => {
+            // If we can't get the lock, show a loading message
+            let loading_msg = Paragraph::new("Loading tags...")
+                .style(Style::default().fg(Color::Yellow))
+                .alignment(Alignment::Center);
+            
+            f.render_widget(loading_msg, chunks[3]);
+        }
+        Ok(notes_state) => {
         let tags: Vec<_> = notes_state.tags.values().collect();
         
         if tags.is_empty() {
@@ -438,6 +440,7 @@ fn render_tag_form<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
                 .block(Block::default().borders(Borders::ALL).title("Tags"));
             
             f.render_widget(tag_list, chunks[3]);
+        }
         }
     }
     
@@ -497,7 +500,7 @@ fn render_tag_form<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Render the note edit form
-fn render_note_edit_form<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
+fn render_note_edit_form(f: &mut Frame, app: &App, area: Rect) {
     // Create a centered box for the form
     let form_area = centered_rect(80, 80, area);
     

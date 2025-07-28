@@ -1,8 +1,7 @@
 use ratatui::Frame;
-use ratatui::backend::Backend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Alignment};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Paragraph, Clear};
+use ratatui::widgets::{Block, Borders, Paragraph, Clear, Wrap};
 
 use crate::app::{App, FormField};
 
@@ -28,7 +27,7 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 /// Render the task creation form
-pub fn render_task_form<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
+pub fn render_task_form(f: &mut Frame, app: &App, area: Rect) {
     // Create a centered box for the form - make it larger
     let form_area = centered_rect(80, 60, area);
     
@@ -67,7 +66,7 @@ pub fn render_task_form<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
         .alignment(Alignment::Left);
     f.render_widget(title_label, chunks[0]);
     
-    // Title input
+    // Title input with text wrapping
     let title_input = Paragraph::new(app.task_form_title.as_str())
         .style(Style::default().fg(Color::White))
         .block(Block::default().borders(Borders::ALL).style(
@@ -76,7 +75,8 @@ pub fn render_task_form<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default()
             }
-        ));
+        ))
+        .wrap(Wrap { trim: true });
     f.render_widget(title_input, chunks[1]);
     
     // Description label
@@ -85,7 +85,7 @@ pub fn render_task_form<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
         .alignment(Alignment::Left);
     f.render_widget(desc_label, chunks[3]);
     
-    // Description input
+    // Description input with text wrapping
     let desc_input = Paragraph::new(app.task_form_description.as_str())
         .style(Style::default().fg(Color::White))
         .block(Block::default().borders(Borders::ALL).style(
@@ -94,7 +94,8 @@ pub fn render_task_form<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default()
             }
-        ));
+        ))
+        .wrap(Wrap { trim: true });
     f.render_widget(desc_input, chunks[4]);
     
     // Buttons
@@ -134,18 +135,33 @@ pub fn render_task_form<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
     if app.show_task_form {
         match app.focused_field {
             FormField::Title => {
-                // Position cursor at the end of the title text
-                f.set_cursor(
-                    chunks[1].x + app.task_form_title.len() as u16 + 1,
-                    chunks[1].y + 1,
-                );
+                // For wrapped text, we need to calculate the cursor position differently
+                // This is a simplified approach - for full support, we'd need to calculate line breaks
+                let text_len = app.task_form_title.len() as u16;
+                let field_width = chunks[1].width.saturating_sub(2); // Account for borders
+                
+                if text_len < field_width {
+                    // Text fits on one line
+                    f.set_cursor(
+                        chunks[1].x + text_len + 1,
+                        chunks[1].y + 1,
+                    );
+                }
+                // For multi-line text, cursor positioning would need more complex calculation
             }
             FormField::Description => {
-                // Position cursor at the end of the description text
-                f.set_cursor(
-                    chunks[4].x + app.task_form_description.len() as u16 + 1,
-                    chunks[4].y + 1,
-                );
+                // Similar approach for description
+                let text_len = app.task_form_description.len() as u16;
+                let field_width = chunks[4].width.saturating_sub(2); // Account for borders
+                
+                if text_len < field_width {
+                    // Text fits on one line
+                    f.set_cursor(
+                        chunks[4].x + text_len + 1,
+                        chunks[4].y + 1,
+                    );
+                }
+                // For multi-line text, cursor positioning would need more complex calculation
             }
             _ => {}
         }

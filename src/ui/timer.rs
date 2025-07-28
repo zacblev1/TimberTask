@@ -1,17 +1,20 @@
 use ratatui::Frame;
-use ratatui::backend::Backend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph, Gauge};
 
 use crate::app::App;
+use crate::utils::mutex::lock_mutex;
 use crate::utils::time::format_time;
 use crate::ui::kanban::format_time_spent;
 
 /// Render the timer tab
-pub fn render_timer<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
+pub fn render_timer(f: &mut Frame, app: &App, area: Rect) {
     // Get timer state
-    let timer_state = app.timer_state.lock().unwrap();
+    let timer_state = match lock_mutex(&app.timer_state) {
+        Ok(state) => state,
+        Err(_) => return, // Skip rendering if mutex is poisoned
+    };
     
     // Create timer layout
     let chunks = Layout::default()
@@ -43,7 +46,10 @@ pub fn render_timer<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
     drop(timer_state);
     
     let task_info = if let Some(task_id) = current_task_id {
-        let kanban_state = app.kanban_state.lock().unwrap();
+        let kanban_state = match lock_mutex(&app.kanban_state) {
+            Ok(state) => state,
+            Err(_) => return, // Skip rendering if mutex is poisoned
+        };
         if let Some(task) = kanban_state.get_task(&task_id) {
             Paragraph::new(format!("Working on: {} (Total: {})", 
                 task.title, 
@@ -64,7 +70,10 @@ pub fn render_timer<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(task_info, chunks[1]);
     
     // Re-acquire timer state
-    let timer_state = app.timer_state.lock().unwrap();
+    let timer_state = match lock_mutex(&app.timer_state) {
+        Ok(state) => state,
+        Err(_) => return, // Skip rendering if mutex is poisoned
+    };
     
     // Render timer visualization (circle with progress)
     // For simplicity, we'll use a gauge widget here instead of a custom circle
@@ -100,7 +109,7 @@ pub fn render_timer<B: Backend>(f: &mut Frame, app: &App, area: Rect) {
     
     // Render controls
     let controls_text = if timer_state.is_running {
-        "[P]ause  [R]eset  [S]kip"
+        "[P]ause  [R]eset  [K] Skip & Add Time"
     } else {
         "[S]tart  [R]eset  [T]oggle Work/Break"
     };

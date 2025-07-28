@@ -1,5 +1,4 @@
 use ratatui::Frame;
-use ratatui::backend::Backend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Block;
@@ -9,7 +8,7 @@ use crate::app::App;
 
 /// Render the main application layout
 #[allow(dead_code)]
-pub fn render_layout<B: Backend>(f: &mut Frame, _app: &App) {
+pub fn render_layout(f: &mut Frame, _app: &App) {
     let size = f.size();
     
     // Create a layout with two main sections:

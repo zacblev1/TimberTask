@@ -1,9 +1,12 @@
 use anyhow::{anyhow, Result};
+use crate::error::{AppError, AppResult};
+use crate::state::save_request::SaveRequest;
+use crate::utils::atomic_save::{atomic_write, atomic_read};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{debug, info, warn};
 
 /// Status of a task in the kanban board
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -81,13 +84,34 @@ pub struct KanbanState {
     pub selected_project_id: Option<String>,
 }
 
-impl Default for KanbanState {
-    fn default() -> Self {
+impl KanbanState {
+    /// Create a new KanbanState with proper error handling
+    pub fn new() -> AppResult<Self> {
         // Get application data directory
         let app_data_dir = home::home_dir()
-            .expect("Failed to get home directory")
+            .ok_or(AppError::HomeDirectoryNotFound)?
             .join(".timber-task");
         let data_file_path = app_data_dir.join("kanban_data.json");
+        
+        Ok(Self {
+            projects: HashMap::new(),
+            tasks: HashMap::new(),
+            next_project_id: 1,
+            next_task_id: 1,
+            data_file_path,
+            selected_project_id: None,
+        })
+    }
+}
+
+impl Default for KanbanState {
+    fn default() -> Self {
+        // Fallback to a temporary directory if home directory is not available
+        let data_file_path = home::home_dir()
+            .map(|home| home.join(".timber-task").join("kanban_data.json"))
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join("timber-task").join("kanban_data.json")
+            });
         
         Self {
             projects: HashMap::new(),
@@ -101,7 +125,7 @@ impl Default for KanbanState {
 }
 
 impl KanbanState {
-    /// Save the kanban state to disk
+    /// Save the kanban state to disk using atomic write
     pub fn save_to_disk(&self) -> Result<()> {
         let data = KanbanStateData {
             projects: self.projects.clone(),
@@ -114,24 +138,35 @@ impl KanbanState {
         let json = serde_json::to_string_pretty(&data)
             .map_err(|e| anyhow!("Failed to serialize kanban state: {}", e))?;
         
-        fs::create_dir_all(self.data_file_path.parent().unwrap())
-            .map_err(|e| anyhow!("Failed to create data directory: {}", e))?;
-            
-        fs::write(&self.data_file_path, json)
+        // Use atomic write to prevent corruption
+        atomic_write(&self.data_file_path, &json)
             .map_err(|e| anyhow!("Failed to write kanban state to disk: {}", e))?;
             
         Ok(())
     }
     
+    /// Process a save request outside of mutex locks
+    pub fn process_save_request(&self, request: &SaveRequest) -> Result<()> {
+        match request {
+            SaveRequest::Full => self.save_to_disk(),
+            SaveRequest::None => Ok(()),
+        }
+    }
+    
     /// Load the kanban state from disk
     pub fn load_from_disk(&mut self) -> Result<()> {
         if !self.data_file_path.exists() {
+            info!("No kanban data file found, creating default project");
             // No file yet, start with a default project
-            self.create_default_project()?;
+            let save_request = self.create_default_project()?;
+            // Process the save request immediately since we're in a loading context
+            self.process_save_request(&save_request)?;
             return Ok(());
         }
         
-        let json = fs::read_to_string(&self.data_file_path)
+        debug!("Loading kanban state from disk");
+        
+        let json = atomic_read(&self.data_file_path)
             .map_err(|e| anyhow!("Failed to read kanban state from disk: {}", e))?;
             
         let data: KanbanStateData = serde_json::from_str(&json)
@@ -147,13 +182,13 @@ impl KanbanState {
     }
     
     /// Create a new project
-    pub fn create_project(&mut self, name: &str) -> Result<Project> {
+    pub fn create_project(&mut self, name: &str) -> Result<(Project, SaveRequest)> {
         let id = self.next_project_id.to_string();
         self.next_project_id += 1;
         
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .map_err(|_| anyhow!("Failed to get system time"))?
             .as_secs();
         
         let project = Project {
@@ -171,16 +206,14 @@ impl KanbanState {
             self.selected_project_id = Some(id.clone());
         }
         
-        // Save changes to disk
-        self.save_to_disk()?;
-        
-        Ok(project)
+        // Return the project and a save request
+        Ok((project, SaveRequest::Full))
     }
     
     /// Create a default project if none exists
-    pub fn create_default_project(&mut self) -> Result<()> {
-        self.create_project("Default Project")?;
-        Ok(())
+    pub fn create_default_project(&mut self) -> Result<SaveRequest> {
+        let (_project, save_request) = self.create_project("Default Project")?;
+        Ok(save_request)
     }
     
     /// Get the selected project
@@ -190,11 +223,10 @@ impl KanbanState {
     
     /// Set the selected project
     #[allow(dead_code)]
-    pub fn set_selected_project(&mut self, project_id: &str) -> Result<()> {
+    pub fn set_selected_project(&mut self, project_id: &str) -> Result<SaveRequest> {
         if self.projects.contains_key(project_id) {
             self.selected_project_id = Some(project_id.to_string());
-            self.save_to_disk()?;
-            Ok(())
+            Ok(SaveRequest::Full)
         } else {
             Err(anyhow!("Project not found"))
         }
@@ -202,7 +234,7 @@ impl KanbanState {
     
     /// Create a new task
     #[allow(dead_code)]
-    pub fn create_task(&mut self, title: &str, description: &str) -> Result<Task> {
+    pub fn create_task(&mut self, title: &str, description: &str) -> Result<(Task, SaveRequest)> {
         let project_id = self.selected_project_id.clone()
             .ok_or_else(|| anyhow!("No project selected"))?;
         
@@ -210,7 +242,7 @@ impl KanbanState {
     }
     
     /// Create a new task in a specific project
-    pub fn create_task_in_project(&mut self, project_id: &str, title: &str, description: &str) -> Result<Task> {
+    pub fn create_task_in_project(&mut self, project_id: &str, title: &str, description: &str) -> Result<(Task, SaveRequest)> {
         // Verify project exists
         if !self.projects.contains_key(project_id) {
             return Err(anyhow!("Project not found"));
@@ -221,7 +253,7 @@ impl KanbanState {
         
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .map_err(|_| anyhow!("Failed to get system time"))?
             .as_secs();
         
         let task = Task {
@@ -242,10 +274,8 @@ impl KanbanState {
         
         self.tasks.insert(id.clone(), task.clone());
         
-        // Save changes to disk
-        self.save_to_disk()?;
-        
-        Ok(task)
+        // Return the task and a save request
+        Ok((task, SaveRequest::Full))
     }
     
     /// Get a task by ID
@@ -267,7 +297,7 @@ impl KanbanState {
     }
     
     /// Update a task's status
-    pub fn update_task_status(&mut self, task_id: &str, status: TaskStatus) -> Result<Task> {
+    pub fn update_task_status(&mut self, task_id: &str, status: TaskStatus) -> Result<(Task, SaveRequest)> {
         // First verify the task exists
         let _task = self.tasks.get(task_id)
             .ok_or_else(|| anyhow!("Task not found"))?;
@@ -280,18 +310,20 @@ impl KanbanState {
         
         // Update the task's status
         {
-            let task = self.tasks.get_mut(task_id).unwrap();
+            let task = self.tasks.get_mut(task_id)
+                .ok_or_else(|| anyhow!("Task not found: {}", task_id))?;
             task.status = status;
             task.updated_at = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
         }
         
-        // Save changes to disk
-        self.save_to_disk()?;
+        let task = self.tasks.get(task_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("Task not found: {}", task_id))?;
         
-        Ok(self.tasks.get(task_id).unwrap().clone())
+        Ok((task, SaveRequest::Full))
     }
     
     /// Update task time
@@ -305,37 +337,50 @@ impl KanbanState {
             // This function just ensures the task's updated_at timestamp is updated
             task.updated_at = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
         }
         
         // Save changes to disk
         self.save_to_disk()?;
         
-        Ok(self.tasks.get(task_id).unwrap().clone())
+        self.tasks.get(task_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("Task not found: {}", task_id))
     }
     
     /// Add time to a task (used when tracking time with the timer)
-    pub fn add_time_to_task(&mut self, task_id: &str, seconds: u64) -> Result<Task> {
+    pub fn add_time_to_task(&mut self, task_id: &str, seconds: u64) -> Result<(Task, SaveRequest)> {
+        info!("add_time_to_task called - task_id: {}, seconds: {}", task_id, seconds);
+        
         {
             let task = self.tasks.get_mut(task_id)
-                .ok_or_else(|| anyhow!("Task not found"))?;
+                .ok_or_else(|| {
+                    warn!("Task not found in add_time_to_task: {}", task_id);
+                    anyhow!("Task not found")
+                })?;
             
+            let old_time = task.time_spent;
             task.time_spent += seconds;
             task.updated_at = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            
+            info!("Updated task {} time_spent from {} to {} seconds", 
+                 task_id, old_time, task.time_spent);
         }
         
-        // Save changes to disk
-        self.save_to_disk()?;
+        let task = self.tasks.get(task_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("Task not found: {}", task_id))?;
         
-        Ok(self.tasks.get(task_id).unwrap().clone())
+        info!("Returning updated task with time_spent: {} seconds", task.time_spent);
+        Ok((task, SaveRequest::Full))
     }
 
     /// Delete a task
-    pub fn delete_task(&mut self, task_id: &str) -> Result<()> {
+    pub fn delete_task(&mut self, task_id: &str) -> Result<SaveRequest> {
         // Remove task from all projects
         for project in self.projects.values_mut() {
             project.tasks.retain(|id| id != task_id);
@@ -345,9 +390,6 @@ impl KanbanState {
         self.tasks.remove(task_id)
             .ok_or_else(|| anyhow!("Task not found"))?;
         
-        // Save changes to disk
-        self.save_to_disk()?;
-        
-        Ok(())
+        Ok(SaveRequest::Full)
     }
 }

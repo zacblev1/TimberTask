@@ -2,10 +2,10 @@ mod timer;
 mod kanban;
 mod layout;
 mod task_form;
+mod task_detail;
 mod notes;
 
 use ratatui::Frame;
-use ratatui::backend::Backend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::widgets::{Block, Borders, Tabs};
 use ratatui::style::{Color, Modifier, Style};
@@ -15,10 +15,11 @@ use crate::app::App;
 use timer::render_timer;
 use kanban::render_kanban;
 use task_form::render_task_form;
+use task_detail::render_task_detail;
 use notes::render_notes;
 
 /// Render the user interface
-pub fn ui<B: Backend>(f: &mut Frame, app: &App) {
+pub fn ui(f: &mut Frame, app: &App) {
     // Create main layout (whole screen)
     let size = f.size();
     
@@ -32,7 +33,7 @@ pub fn ui<B: Backend>(f: &mut Frame, app: &App) {
         .split(size);
     
     // Create tabs
-    let tab_titles = vec!["Timer", "Kanban", "Notes"];
+    let tab_titles = ["Timer", "Kanban", "Notes"];
     let titles = tab_titles.iter().map(|t| {
         vec![Span::styled(*t, Style::default().fg(Color::White))]
     }).collect();
@@ -52,14 +53,18 @@ pub fn ui<B: Backend>(f: &mut Frame, app: &App) {
     
     // Render the content based on selected tab
     match app.tab_index {
-        0 => render_timer::<B>(f, app, chunks[1]),
-        1 => render_kanban::<B>(f, app, chunks[1]),
-        2 => render_notes::<B>(f, app, chunks[1]),
+        0 => render_timer(f, app, chunks[1]),
+        1 => render_kanban(f, app, chunks[1]),
+        2 => render_notes(f, app, chunks[1]),
         _ => {}
     }
     
     // Render any modals on top
     if app.show_task_form {
-        render_task_form::<B>(f, app, size);
+        render_task_form(f, app, size);
+    }
+    
+    if app.show_task_detail {
+        render_task_detail(f, app, size);
     }
 }

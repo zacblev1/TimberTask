@@ -1,25 +1,31 @@
 use anyhow::{anyhow, Result};
+use timber_task::utils::mutex::lock_mutex;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use std::fs;
 use std::io;
 use std::panic;
+use tracing::{error, info, warn};
 
-mod app;
-mod debug;
-mod event;
-mod state;
-mod ui;
-mod utils;
-
-use app::App;
-use event::{Event, EventHandler};
-use ui::ui;
+use timber_task::app::App;
+use timber_task::event::{Event, EventHandler};
+use timber_task::ui::ui;
+use timber_task::logging;
 
 fn main() -> Result<()> {
+    // Initialize logging first
+    if let Err(e) = logging::init_logging() {
+        eprintln!("Failed to initialize logging: {}", e);
+        // Continue anyway - logging is not critical for app function
+    }
+    
+    info!("Starting TimberTask application");
+    
     // Set up panic hook to restore terminal on crash
     let original_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
+        // Log the panic
+        error!("Application panicked: {:?}", panic_info);
+        
         // Try to restore terminal first
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(
@@ -36,6 +42,7 @@ fn main() -> Result<()> {
     let terminal_result = setup_terminal();
     
     if let Err(err) = &terminal_result {
+        error!("Error setting up terminal: {}", err);
         eprintln!("Error setting up terminal: {}", err);
         eprintln!("This application requires a fully interactive terminal.");
         eprintln!("Please run this program directly in a terminal window, not through an IDE/editor terminal.");
@@ -44,22 +51,9 @@ fn main() -> Result<()> {
     
     let mut terminal = terminal_result?;
     
-    // Set up logging
-    let log_file = home::home_dir()
-        .expect("Failed to get home directory")
-        .join(".timber-task")
-        .join("app.log");
-    
-    // Create log directory if it doesn't exist
-    if let Some(parent) = log_file.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent).unwrap_or_else(|e| {
-                eprintln!("Failed to create log directory: {}", e);
-            });
-        }
-    }
     
     // Create app state
+    info!("Creating application state");
     let mut app = App::new()?;
     
     // Create event handler
@@ -67,22 +61,17 @@ fn main() -> Result<()> {
     
     // Try to select a task if we start on the Kanban tab
     if app.tab_index == 1 {
+        info!("Starting on Kanban tab, selecting first available task");
         let _ = app.select_first_available_task();
     }
     
     // Pre-initialize notes if starting on notes tab
     if app.tab_index == 2 {
-        // Log this attempt
-        fs::write(&log_file, "Initializing notes tab on startup\n").unwrap_or_else(|e| {
-            eprintln!("Failed to write to log file: {}", e);
-        });
+        info!("Initializing notes tab on startup");
         
-        let mut notes_state = app.notes_state.lock().unwrap();
+        let mut notes_state = lock_mutex(&app.notes_state)?;
         if let Err(e) = notes_state.load_from_disk() {
-            let error_msg = format!("Failed to load notes data: {}\n", e);
-            fs::write(&log_file, error_msg).unwrap_or_else(|e| {
-                eprintln!("Failed to write to log file: {}", e);
-            });
+            error!("Failed to load notes data: {}", e);
         }
         
         // If no note is selected, try to select the first root note
@@ -95,30 +84,53 @@ fn main() -> Result<()> {
             // Then select it if we found one
             if let Some(id) = first_root_id {
                 if let Err(e) = notes_state.select_note(&id) {
-                    let error_msg = format!("Failed to select note: {}\n", e);
-                    fs::write(&log_file, error_msg).unwrap_or_else(|e| {
-                        eprintln!("Failed to write to log file: {}", e);
-                    });
+                    error!("Failed to select note: {}", e);
                 }
             }
         }
     }
     
     // Run the application
+    info!("Starting main application loop");
     let res = run_app(&mut terminal, &mut app, &mut event_handler);
+    
+    // Ensure the event handler is properly shut down
+    // This is redundant if run_app completed normally, but ensures cleanup on error
+    event_handler.shutdown();
+    
+    // Save any pending data before exit
+    info!("Saving application state before exit");
+    if let Ok(kanban) = lock_mutex(&app.kanban_state) {
+        if let Err(e) = kanban.save_to_disk() {
+            error!("Failed to save kanban state: {}", e);
+        }
+    }
+    if let Ok(notes) = lock_mutex(&app.notes_state) {
+        if let Err(e) = notes.save_to_disk() {
+            error!("Failed to save notes state: {}", e);
+        }
+    }
+    if let Ok(timer) = lock_mutex(&app.timer_state) {
+        if let Err(e) = timer.save_to_disk() {
+            error!("Failed to save timer state: {}", e);
+        }
+    }
     
     // Restore terminal
     restore_terminal(&mut terminal)?;
     
     // Handle any errors that occurred during app execution
     if let Err(err) = res {
+        error!("Application error: {:?}", err);
         println!("{:?}", err);
     }
     
+    info!("TimberTask application shutting down gracefully");
     Ok(())
 }
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
+    info!("Setting up terminal");
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     
@@ -129,6 +141,7 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     );
     
     if let Err(e) = execution_result {
+        error!("Failed to execute terminal setup commands: {}", e);
         // Make sure to disable raw mode if we fail here
         let _ = crossterm::terminal::disable_raw_mode();
         return Err(anyhow::anyhow!("Failed to execute terminal setup commands: {}", e));
@@ -137,8 +150,12 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     let backend = CrosstermBackend::new(stdout);
     
     match Terminal::new(backend) {
-        Ok(terminal) => Ok(terminal),
+        Ok(terminal) => {
+            info!("Terminal setup successful");
+            Ok(terminal)
+        },
         Err(e) => {
+            error!("Failed to create terminal: {}", e);
             // Make sure to clean up if we fail
             let _ = crossterm::terminal::disable_raw_mode();
             Err(anyhow::anyhow!("Failed to create terminal: {}", e))
@@ -167,7 +184,7 @@ fn run_app(
     
     loop {
         // Draw the UI
-        terminal.draw(|f| ui::<CrosstermBackend<io::Stdout>>(f, app))?;
+        terminal.draw(|f| ui(f, app))?;
         
         // Handle events
         match event_handler.next()? {
@@ -176,7 +193,8 @@ fn run_app(
             }
             Event::Input(key) => {
                 if app.handle_key(key)? {
-                    return Ok(());
+                    // App indicated it should quit
+                    break;
                 }
             }
             Event::Resize => {
@@ -184,7 +202,17 @@ fn run_app(
                 check_terminal_size(terminal)?;
             }
         }
+        
+        // Check if app should quit
+        if app.should_quit {
+            break;
+        }
     }
+    
+    // Shutdown the event handler cleanly
+    event_handler.shutdown();
+    
+    Ok(())
 }
 
 fn check_terminal_size(terminal: &Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
@@ -198,6 +226,8 @@ fn check_terminal_size(terminal: &Terminal<CrosstermBackend<io::Stdout>>) -> Res
     
     // Recommended size for optimal display
     if size.width < 120 || size.height < 30 {
+        warn!("Terminal size {}x{} is smaller than recommended 120x30. Some UI elements may not display properly.", 
+            size.width, size.height);
         eprintln!("Warning: Terminal size {}x{} is smaller than recommended 120x30. Some UI elements may not display properly.", 
             size.width, size.height);
     }

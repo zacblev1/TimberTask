@@ -1,10 +1,13 @@
 use anyhow::{anyhow, Result};
+use crate::error::{AppError, AppResult};
+use crate::state::save_request::SaveRequest;
+use crate::utils::atomic_save::{atomic_write, atomic_read};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+use tracing::{debug, info};
 
 /// Tag for categorizing notes
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -67,13 +70,33 @@ pub struct NotesState {
     pub selected_note_id: Option<String>,
 }
 
-impl Default for NotesState {
-    fn default() -> Self {
+impl NotesState {
+    /// Create a new NotesState with proper error handling
+    pub fn new() -> AppResult<Self> {
         // Get application data directory
         let app_data_dir = home::home_dir()
-            .expect("Failed to get home directory")
+            .ok_or(AppError::HomeDirectoryNotFound)?
             .join(".timber-task");
         let data_file_path = app_data_dir.join("notes_data.json");
+        
+        Ok(Self {
+            notes: HashMap::new(),
+            tags: HashMap::new(),
+            root_notes: Vec::new(),
+            data_file_path,
+            selected_note_id: None,
+        })
+    }
+}
+
+impl Default for NotesState {
+    fn default() -> Self {
+        // Fallback to a temporary directory if home directory is not available
+        let data_file_path = home::home_dir()
+            .map(|home| home.join(".timber-task").join("notes_data.json"))
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join("timber-task").join("notes_data.json")
+            });
         
         Self {
             notes: HashMap::new(),
@@ -86,8 +109,9 @@ impl Default for NotesState {
 }
 
 impl NotesState {
-    /// Save the notes state to disk
+    /// Save the notes state to disk using atomic write
     pub fn save_to_disk(&self) -> Result<()> {
+        debug!("Saving notes state to disk");
         let data = NotesStateData {
             notes: self.notes.clone(),
             tags: self.tags.clone(),
@@ -98,23 +122,32 @@ impl NotesState {
         let json = serde_json::to_string_pretty(&data)
             .map_err(|e| anyhow!("Failed to serialize notes state: {}", e))?;
         
-        fs::create_dir_all(self.data_file_path.parent().unwrap())
-            .map_err(|e| anyhow!("Failed to create data directory: {}", e))?;
-            
-        fs::write(&self.data_file_path, json)
+        // Use atomic write to prevent corruption
+        atomic_write(&self.data_file_path, &json)
             .map_err(|e| anyhow!("Failed to write notes state to disk: {}", e))?;
             
         Ok(())
     }
     
+    /// Process a save request outside of mutex locks
+    pub fn process_save_request(&self, request: &SaveRequest) -> Result<()> {
+        match request {
+            SaveRequest::Full => self.save_to_disk(),
+            SaveRequest::None => Ok(()),
+        }
+    }
+    
     /// Load the notes state from disk
     pub fn load_from_disk(&mut self) -> Result<()> {
         if !self.data_file_path.exists() {
+            info!("No notes data file found, starting with empty state");
             // No file yet, create an empty state
             return Ok(());
         }
         
-        let json = fs::read_to_string(&self.data_file_path)
+        debug!("Loading notes state from disk");
+        
+        let json = atomic_read(&self.data_file_path)
             .map_err(|e| anyhow!("Failed to read notes state from disk: {}", e))?;
             
         let data: NotesStateData = serde_json::from_str(&json)
@@ -129,7 +162,7 @@ impl NotesState {
     }
     
     /// Create a new tag
-    pub fn create_tag(&mut self, name: &str, color: Option<&str>) -> Result<Tag> {
+    pub fn create_tag(&mut self, name: &str, color: Option<&str>) -> Result<(Tag, SaveRequest)> {
         // Generate a unique ID for the tag
         let id = Uuid::new_v4().to_string();
         
@@ -141,10 +174,7 @@ impl NotesState {
         
         self.tags.insert(id.clone(), tag.clone());
         
-        // Save changes to disk
-        self.save_to_disk()?;
-        
-        Ok(tag)
+        Ok((tag, SaveRequest::Full))
     }
     
     /// Get a tag by ID
@@ -154,7 +184,7 @@ impl NotesState {
     
     /// Update a tag
     #[allow(dead_code)]
-    pub fn update_tag(&mut self, tag_id: &str, name: &str, color: Option<&str>) -> Result<Tag> {
+    pub fn update_tag(&mut self, tag_id: &str, name: &str, color: Option<&str>) -> Result<(Tag, SaveRequest)> {
         {
             let tag = self.tags.get_mut(tag_id)
                 .ok_or_else(|| anyhow!("Tag not found"))?;
@@ -163,15 +193,16 @@ impl NotesState {
             tag.color = color.map(String::from);
         }
         
-        // Save changes to disk
-        self.save_to_disk()?;
-        
         // Return the updated tag
-        Ok(self.tags.get(tag_id).unwrap().clone())
+        let tag = self.tags.get(tag_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("Tag not found: {}", tag_id))?;
+        
+        Ok((tag, SaveRequest::Full))
     }
     
     /// Delete a tag
-    pub fn delete_tag(&mut self, tag_id: &str) -> Result<()> {
+    pub fn delete_tag(&mut self, tag_id: &str) -> Result<SaveRequest> {
         // Remove tag from all notes
         for note in self.notes.values_mut() {
             note.tags.remove(tag_id);
@@ -181,20 +212,18 @@ impl NotesState {
         self.tags.remove(tag_id)
             .ok_or_else(|| anyhow!("Tag not found"))?;
         
-        // Save changes to disk
-        self.save_to_disk()?;
-        
-        Ok(())
+        Ok(SaveRequest::Full)
     }
     
     /// Create a new note
-    pub fn create_note(&mut self, title: &str, content: &str, parent_id: Option<&str>) -> Result<Note> {
+    pub fn create_note(&mut self, title: &str, content: &str, parent_id: Option<&str>) -> Result<(Note, SaveRequest)> {
+        info!("Creating new note: {}", title);
         // Generate a unique ID for the note
         let id = Uuid::new_v4().to_string();
         
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .map_err(|_| anyhow!("Failed to get system time"))?
             .as_secs();
         
         let note = Note {
@@ -228,10 +257,7 @@ impl NotesState {
             self.selected_note_id = Some(id.clone());
         }
         
-        // Save changes to disk
-        self.save_to_disk()?;
-        
-        Ok(note)
+        Ok((note, SaveRequest::Full))
     }
     
     /// Get a note by ID
@@ -240,7 +266,7 @@ impl NotesState {
     }
     
     /// Update a note's content
-    pub fn update_note(&mut self, note_id: &str, title: &str, content: &str) -> Result<Note> {
+    pub fn update_note(&mut self, note_id: &str, title: &str, content: &str) -> Result<(Note, SaveRequest)> {
         {
             let note = self.notes.get_mut(note_id)
                 .ok_or_else(|| anyhow!("Note not found"))?;
@@ -249,20 +275,21 @@ impl NotesState {
             note.content = content.to_string();
             note.updated_at = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .map_err(|_| anyhow!("Failed to get system time"))?
                 .as_secs();
         }
         
-        // Save changes to disk
-        self.save_to_disk()?;
-        
         // Return the updated note
-        Ok(self.notes.get(note_id).unwrap().clone())
+        let note = self.notes.get(note_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("Note not found: {}", note_id))?;
+        
+        Ok((note, SaveRequest::Full))
     }
     
     /// Move a note to a new parent
     #[allow(dead_code)]
-    pub fn move_note(&mut self, note_id: &str, new_parent_id: Option<&str>) -> Result<Note> {
+    pub fn move_note(&mut self, note_id: &str, new_parent_id: Option<&str>) -> Result<(Note, SaveRequest)> {
         // Get the note to move (clone needed data to avoid borrow issues)
         let old_parent_id;
         
@@ -306,11 +333,12 @@ impl NotesState {
         
         // Update the note's parent
         {
-            let note = self.notes.get_mut(note_id).unwrap();
+            let note = self.notes.get_mut(note_id)
+                .ok_or_else(|| anyhow!("Note not found: {}", note_id))?;
             note.parent_id = new_parent_id.map(String::from);
             note.updated_at = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .map_err(|_| anyhow!("Failed to get system time"))?
                 .as_secs();
         }
         
@@ -325,15 +353,17 @@ impl NotesState {
             self.root_notes.push(note_id.to_string());
         }
         
-        // Save changes to disk
-        self.save_to_disk()?;
-        
         // Return the updated note
-        Ok(self.notes.get(note_id).unwrap().clone())
+        let note = self.notes.get(note_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("Note not found: {}", note_id))?;
+        
+        Ok((note, SaveRequest::Full))
     }
     
     /// Delete a note and all its children
-    pub fn delete_note(&mut self, note_id: &str) -> Result<()> {
+    pub fn delete_note(&mut self, note_id: &str) -> Result<SaveRequest> {
+        info!("Deleting note: {}", note_id);
         // Get the note to delete and clone the necessary data
         let children;
         let parent_id;
@@ -349,6 +379,8 @@ impl NotesState {
         
         // Recursively delete all children
         for child_id in children {
+            // We ignore the save requests from child deletions
+            // since we'll save once at the end
             self.delete_note(&child_id)?;
         }
         
@@ -370,14 +402,11 @@ impl NotesState {
             self.selected_note_id = parent_id;
         }
         
-        // Save changes to disk
-        self.save_to_disk()?;
-        
-        Ok(())
+        Ok(SaveRequest::Full)
     }
     
     /// Toggle a note's expanded state
-    pub fn toggle_note_expanded(&mut self, note_id: &str) -> Result<Note> {
+    pub fn toggle_note_expanded(&mut self, note_id: &str) -> Result<(Note, SaveRequest)> {
         {
             let note = self.notes.get_mut(note_id)
                 .ok_or_else(|| anyhow!("Note not found"))?;
@@ -385,16 +414,17 @@ impl NotesState {
             note.expanded = !note.expanded;
         }
         
-        // Save changes to disk
-        self.save_to_disk()?;
-        
         // Return the updated note
-        Ok(self.notes.get(note_id).unwrap().clone())
+        let note = self.notes.get(note_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("Note not found: {}", note_id))?;
+        
+        Ok((note, SaveRequest::Full))
     }
     
     /// Add a tag to a note
     #[allow(dead_code)]
-    pub fn add_tag_to_note(&mut self, note_id: &str, tag_id: &str) -> Result<Note> {
+    pub fn add_tag_to_note(&mut self, note_id: &str, tag_id: &str) -> Result<(Note, SaveRequest)> {
         // Verify tag exists
         if !self.tags.contains_key(tag_id) {
             return Err(anyhow!("Tag not found"));
@@ -407,20 +437,21 @@ impl NotesState {
             note.tags.insert(tag_id.to_string());
             note.updated_at = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .map_err(|_| anyhow!("Failed to get system time"))?
                 .as_secs();
         }
         
-        // Save changes to disk
-        self.save_to_disk()?;
-        
         // Return the updated note
-        Ok(self.notes.get(note_id).unwrap().clone())
+        let note = self.notes.get(note_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("Note not found: {}", note_id))?;
+        
+        Ok((note, SaveRequest::Full))
     }
     
     /// Remove a tag from a note
     #[allow(dead_code)]
-    pub fn remove_tag_from_note(&mut self, note_id: &str, tag_id: &str) -> Result<Note> {
+    pub fn remove_tag_from_note(&mut self, note_id: &str, tag_id: &str) -> Result<(Note, SaveRequest)> {
         {
             let note = self.notes.get_mut(note_id)
                 .ok_or_else(|| anyhow!("Note not found"))?;
@@ -428,15 +459,16 @@ impl NotesState {
             note.tags.remove(tag_id);
             note.updated_at = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .map_err(|_| anyhow!("Failed to get system time"))?
                 .as_secs();
         }
         
-        // Save changes to disk
-        self.save_to_disk()?;
-        
         // Return the updated note
-        Ok(self.notes.get(note_id).unwrap().clone())
+        let note = self.notes.get(note_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("Note not found: {}", note_id))?;
+        
+        Ok((note, SaveRequest::Full))
     }
     
     /// Get all notes with a specific tag
@@ -465,11 +497,10 @@ impl NotesState {
     }
     
     /// Select a note
-    pub fn select_note(&mut self, note_id: &str) -> Result<()> {
+    pub fn select_note(&mut self, note_id: &str) -> Result<SaveRequest> {
         if self.notes.contains_key(note_id) {
             self.selected_note_id = Some(note_id.to_string());
-            self.save_to_disk()?;
-            Ok(())
+            Ok(SaveRequest::Full)
         } else {
             Err(anyhow!("Note not found"))
         }
@@ -477,10 +508,9 @@ impl NotesState {
     
     /// Clear note selection
     #[allow(dead_code)]
-    pub fn clear_selection(&mut self) -> Result<()> {
+    pub fn clear_selection(&mut self) -> Result<SaveRequest> {
         self.selected_note_id = None;
-        self.save_to_disk()?;
-        Ok(())
+        Ok(SaveRequest::Full)
     }
     
     /// Get the currently selected note
