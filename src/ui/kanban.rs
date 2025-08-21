@@ -154,7 +154,7 @@ fn render_task_column(
         let title = truncate_text(&task.title, width);
         
         // Check if this task is being tracked
-        let is_tracked = current_task_id.map_or(false, |id| id == &task.id);
+        let is_tracked = current_task_id == Some(&task.id);
         
         // Create task item with title and time spent
         let mut task_text = format!("{} ({})", title, format_time_spent(task.time_spent));

@@ -142,7 +142,6 @@ macro_rules! assert_err {
         match $result {
             Err($pattern) => {},
             Ok(_) => panic!("Expected error matching {} but got Ok", stringify!($pattern)),
-            Err(e) => panic!("Expected error matching {} but got {:?}", stringify!($pattern), e),
         }
     };
 }
