@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 # TUI framework
-ratatui = "0.25.0"         # Modern TUI framework (successor to tui-rs)
+ratatui = "0.29.0"         # Modern TUI framework (successor to tui-rs)
 crossterm = "0.27.0"       # Cross-platform terminal handling
 
 # State management
