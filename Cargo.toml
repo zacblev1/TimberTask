@@ -27,7 +27,7 @@ notify-rust = "4.9"        # Desktop notifications (for pomodoro completion)
 # Data storage
 home = "0.5"               # For finding the user's home directory
 anyhow = "1.0"             # Error handling
-thiserror = "1.0"          # Error definitions
+thiserror = "2.0"          # Error definitions
 
 # Async capabilities (for background timers)
 tokio = { version = "1", features = ["full"] }
