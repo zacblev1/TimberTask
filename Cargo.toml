@@ -35,7 +35,7 @@ futures = "0.3"
 
 # Utility
 uuid = { version = "1.4", features = ["v4", "serde"] }
-unicode-width = "0.1.10"   # For handling text width calculations
+unicode-width = "0.2.2"   # For handling text width calculations
 ctrlc = "3.4.0"            # For handling Ctrl+C signals
 
 # Logging
